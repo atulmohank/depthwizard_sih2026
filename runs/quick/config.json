@@ -1,0 +1,21 @@
+{
+  "data": "data/tiles",
+  "model": "small",
+  "name": "quick",
+  "epochs": 2,
+  "batch": 4,
+  "accum": 2,
+  "lr_enc": 5e-06,
+  "lr_dec": 5e-05,
+  "grad_w": 0.5,
+  "workers": 4,
+  "limit_train": 500,
+  "limit_val": 100,
+  "quick": true,
+  "baseline": false,
+  "init": null,
+  "height_scale": null,
+  "grad_ckpt": false,
+  "units": "raw_8bit",
+  "div": 25.5
+}

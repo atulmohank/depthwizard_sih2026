@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DepthWizard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<aside id="side">
+  <header>
+    <h1>DepthWizard</h1>
+    <p class="sub">One satellite image &rarr; 3D city, heights in metres</p>
+  </header>
+
+  <section id="secSource" aria-label="Area">
+    <div class="seg" role="tablist" aria-label="Source">
+      <button id="tabMap" role="tab" aria-selected="true" class="on">Pick on map</button>
+      <button id="tabUpload" role="tab" aria-selected="false">Upload image</button>
+    </div>
+
+    <div id="paneMap">
+      <p class="hint">Click the map to set the centre of the area.</p>
+      <div class="two">
+        <label>Latitude<input id="lat" type="number" step="0.0001" min="-85" max="85" value="12.9766"></label>
+        <label>Longitude<input id="lon" type="number" step="0.0001" min="-180" max="180" value="77.5993"></label>
+      </div>
+      <label for="size" class="lbl">Area size <span id="sizev" class="val">600 × 600 m</span></label>
+      <input id="size" type="range" min="300" max="1000" step="50" value="600">
+    </div>
+
+    <div id="paneUpload" hidden>
+      <label id="drop" class="drop">
+        <input id="file" type="file" accept="image/jpeg,image/png,image/tiff,image/webp">
+        <span id="dropText"><b>Drop a top-down satellite image</b><br>or click to choose (JPG, PNG)</span>
+      </label>
+      <label class="lbl">Ground resolution <span class="muted">(metres per pixel)</span>
+        <input id="gsd" type="number" min="0.02" max="5" step="0.01" value="0.30"></label>
+      <p class="hint">Uploaded images have no map position, so buildings are auto-detected (no OpenStreetMap outlines).</p>
+    </div>
+
+    <label class="check"><input id="calib" type="checkbox" checked>
+      <span>Bengaluru height calibration <span id="calibK" class="muted"></span></span></label>
+
+    <button id="go" class="primary">Generate 3D</button>
+
+    <div id="prog" hidden aria-live="polite">
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="bar"><div id="barFill"></div></div>
+      <div class="progline"><span id="stage"></span><span id="pct"></span></div>
+      <pre id="log"></pre>
+    </div>
+    <div id="err" class="err" role="alert" hidden></div>
+  </section>
+
+  <section id="secView" hidden aria-label="View">
+    <h2 id="resTitle"></h2>
+    <div class="modes" id="modes" role="group" aria-label="View mode">
+      <button data-mode="satellite">Satellite</button>
+      <button data-mode="height">Height map</button>
+      <button data-mode="blocks">3D blocks</button>
+      <button data-mode="heat">Colour by height</button>
+      <button data-mode="surface">Raw surface</button>
+      <button data-mode="contours">Contours</button>
+    </div>
+
+    <div id="opt3d" class="opts">
+      <label for="ex" class="lbl">Height exaggeration <span id="exv" class="val">1.0× (true scale)</span></label>
+      <input id="ex" type="range" min="1" max="4" step="0.1" value="1">
+      <div class="row"><button id="fly">Fly through</button><button id="reset">Reset view</button></div>
+    </div>
+    <div id="opt2d" class="opts">
+      <p class="hint">Scroll to zoom, drag to pan, double-click to fit.</p>
+      <label id="optContour" class="lbl">Contour interval
+        <select id="interval"><option value="1">1 m</option><option value="2">2 m</option>
+          <option value="5">5 m</option><option value="10">10 m</option></select></label>
+    </div>
+
+    <div class="readout"><span>Height under cursor</span><b id="readout">–</b></div>
+    <div id="stats" class="stats"></div>
+
+    <div class="row">
+      <a id="dlZip" class="btn" href="#">Download height map</a>
+      <button id="shot">Screenshot</button>
+    </div>
+    <button id="newArea" class="ghost">&larr; New area</button>
+  </section>
+
+  <section id="secRecent" hidden aria-label="Recent results">
+    <h2>Recent</h2>
+    <ul id="recent"></ul>
+  </section>
+
+  <footer>Imagery: Esri World Imagery &middot; Outlines: &copy; OpenStreetMap contributors &middot;
+    Model: fine-tuned Depth Anything V2 (<span id="weights">runs/run1/best.pt</span>)</footer>
+</aside>
+
+<main id="stage">
+  <div id="map"></div>
+  <div id="uploadPreview" hidden><img id="upImg" alt="Uploaded image preview"><p id="upEmpty">Choose an image on the left</p></div>
+  <canvas id="c2d" hidden></canvas>
+  <iframe id="v3d" hidden title="3D viewer"></iframe>
+  <div id="tip2d" class="tip" hidden></div>
+  <div id="legend" hidden><span>0 m</span><i class="ramp"></i><span id="legMax"></span></div>
+  <div id="busy" hidden>Loading result…</div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

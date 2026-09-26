@@ -1,0 +1,3 @@
+epoch,train_loss,val_mae_raw units,val_rmse,val_mae_objects,val_mae_aligned,minutes
+1,0.84593,14.5901,27.2095,31.2304,13.3956,0.6
+2,0.66673,13.5869,25.5996,28.683,12.8299,1.0

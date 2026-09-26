@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DepthWizard City 3D</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet">
+<style>
+  :root { --ink:#16222e; --paper:#eeeae0; --line:#b9b2a1; --accent:#e0602a; --text:#1d2833; }
+  html,body { margin:0; height:100%; background:var(--ink); overflow:hidden;
+    font-family:Barlow, "Segoe UI", system-ui, sans-serif; color:var(--text); }
+  #c { position:fixed; inset:0; }
+  .panel { position:fixed; left:16px; bottom:16px; width:280px; background:var(--paper);
+    border:1px solid var(--line); border-radius:6px; padding:14px 16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  h1 { font-family:"Barlow Condensed", Barlow, sans-serif; font-size:22px; margin:0; }
+  .sub { font-size:13px; opacity:.7; margin:2px 0 8px; }
+  .stats { font-size:12.5px; line-height:1.5; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:6px 0; }
+  .stats b { font-weight:600; }
+  label { display:block; font-size:13px; margin:10px 0 4px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .row { display:flex; gap:6px; margin-top:8px; }
+  button { flex:1; font:600 13px Barlow, sans-serif; padding:7px 6px; border:1px solid var(--line);
+    background:#fff; color:var(--text); border-radius:4px; cursor:pointer; }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .note { font-size:11.5px; opacity:.65; margin-top:8px; line-height:1.4; }
+  #tip { position:fixed; pointer-events:none; background:var(--paper); border:1px solid var(--line); border-radius:4px;
+    padding:6px 9px; font-size:13px; display:none; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:240px; }
+  #tip b { font-size:16px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tip"></div>
+<div class="panel">
+  <h1>DepthWizard</h1>
+  <div class="sub" id="title"></div>
+  <div class="stats" id="stats"></div>
+  <label for="ex">Height exaggeration <span id="exv"></span></label>
+  <input id="ex" type="range" min="1" max="4" step="0.1" value="1">
+  <div class="row">
+    <button id="bBlocks" class="on">3D blocks</button>
+    <button id="bSurf">Raw surface</button>
+  </div>
+  <div class="row">
+    <button id="bPhoto" class="on">Photo roofs</button>
+    <button id="bHeat">Color by height</button>
+  </div>
+  <div class="row">
+    <button id="bTreeR" class="on">Trees: rounded</button>
+    <button id="bTreeF">Trees: flat</button>
+  </div>
+  <div class="row">
+    <button id="bFly">Fly through</button>
+    <button id="bReset">Reset</button>
+  </div>
+  <div class="note">Hover a building for its height. Heights from one image by our fine-tuned model, in metres.
+    Imagery: Esri World Imagery. Outlines: OpenStreetMap contributors.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const D = /*__DATA__*/null;
+const $ = id => document.getElementById(id);
+const S = D.stats;
+$('title').textContent = `${D.title} - ${S.size_m[0]} x ${S.size_m[1]} m, ${S.gsd} m/px`;
+let st = `<b>${S.osm + S.auto}</b> buildings (${S.osm} OpenStreetMap outlines, ${S.auto} auto-detected)`;
+if (S.validation && S.validation.mae_m !== null && !(S.calibration && S.calibration.mode === 'fit'))
+  st += `<br>Check vs OSM floors: <b>${S.validation.mae_m} m</b> avg error on ${S.validation.n_in_range} buildings`;
+const C = S.calibration || {};
+if (C.mode === 'fit') st += `<br>City factor k=${C.k} from OSM floors (held-out error ${C.heldout_mae_before} &rarr; <b>${C.heldout_mae_after} m</b>)`;
+if (C.mode === 'load') st += `<br>City factor k=${C.k} fitted on ${C.fit_on}` + (C.test_mae_after !== undefined ? ` &rarr; error here <b>${C.test_mae_after} m</b> (unseen area)` : '');
+if (S.capped) st += `<br>${S.capped} buildings at the ${S.cap_m} m training cap (shown as ${S.cap_m}+ m)`;
+$('stats').innerHTML = st;
+
+function decode(b64) {
+  const b = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return Float32Array.from(new Uint16Array(b.buffer), v => v / 100);
+}
+const HS = decode(D.surface), HC = decode(D.canopy);
+
+const renderer = new THREE.WebGLRenderer({ canvas: $('c'), antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16222e);
+const R = Math.max(D.SX, D.SZ);
+scene.fog = new THREE.Fog(0x16222e, R * 1.2, R * 3);
+const camera = new THREE.PerspectiveCamera(50, 1, 1, R * 6);
+const controls = new THREE.OrbitControls(camera, $('c'));
+controls.enableDamping = true; controls.maxPolarAngle = Math.PI * 0.48;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445060, 0.7));
+const sun = new THREE.DirectionalLight(0xfff1dc, 0.9); sun.position.set(-R, R * 1.5, R * 0.6); scene.add(sun);
+
+const photo = new THREE.TextureLoader().load('data:image/jpeg;base64,' + D.photo);
+photo.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+// heightfield layers (canopy+ground in blocks mode, full model surface in raw mode)
+function field(H) {
+  const g = new THREE.PlaneGeometry(D.SX, D.SZ, D.gw - 1, D.gh - 1);
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: photo, roughness: 1 }));
+  m.rotation.x = -Math.PI / 2; m.userData.H = H; scene.add(m); return m;
+}
+const canopy = field(HC), surface = field(HS);
+surface.visible = false;
+function applyField(m, ex) {
+  const p = m.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setZ(i, m.userData.H[i] * ex);
+  p.needsUpdate = true; m.geometry.computeVertexNormals();
+}
+
+// LOD1 buildings: flat photo roof + plain walls
+const wallMat = new THREE.MeshStandardMaterial({ color: 0xd8d2c4, roughness: 0.9 });
+const roofMat = new THREE.MeshStandardMaterial({ map: photo, roughness: 0.9 });
+const heatCache = {};
+function heatMat(h) {
+  const t = Math.min(1, h / Math.max(S.cap_m, 1)), k = Math.round(t * 20);
+  if (!heatCache[k]) { const c = new THREE.Color().setHSL(0.66 - 0.66 * k / 20, 0.75, 0.52);
+    heatCache[k] = new THREE.MeshStandardMaterial({ color: c, roughness: 0.8 }); }
+  return heatCache[k];
+}
+const group = new THREE.Group(); scene.add(group);
+for (const b of D.buildings) {
+  const sh = new THREE.Shape(b.p.map(([x, y]) => new THREE.Vector2(x, y)));
+  let g;
+  try { g = new THREE.ExtrudeGeometry(sh, { depth: b.h, bevelEnabled: false }); } catch (e) { continue; }
+  const pos = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / D.SX + 0.5, pos.getY(i) / D.SZ + 0.5);
+  uv.needsUpdate = true;
+  g.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(g, [roofMat, wallMat]);
+  mesh.userData = b; group.add(mesh);
+}
+
+let ex = 1, heat = false, blocks = true, treeK = 1;
+function applyAll() {
+  group.scale.y = ex; applyField(canopy, ex * treeK); applyField(surface, ex);
+  $('exv').textContent = ex.toFixed(1) + 'x' + (ex === 1 ? ' (true scale)' : '');
+}
+applyAll();
+function setHeat(on) {
+  heat = on;
+  for (const m of group.children) m.material = on ? heatMat(m.userData.h) : [roofMat, wallMat];
+  $('bHeat').classList.toggle('on', on); $('bPhoto').classList.toggle('on', !on);
+}
+function setBlocks(on) {
+  blocks = on; group.visible = on; canopy.visible = on; surface.visible = !on;
+  $('bBlocks').classList.toggle('on', on); $('bSurf').classList.toggle('on', !on);
+}
+$('ex').oninput = e => { ex = +e.target.value; applyAll(); };
+function setTrees(r) { treeK = r ? 1 : 0; applyField(canopy, ex * treeK);
+  $('bTreeR').classList.toggle('on', r); $('bTreeF').classList.toggle('on', !r); }
+$('bTreeR').onclick = () => setTrees(true);
+$('bTreeF').onclick = () => setTrees(false);
+$('bBlocks').onclick = () => setBlocks(true);
+$('bSurf').onclick = () => setBlocks(false);
+$('bPhoto').onclick = () => setHeat(false);
+$('bHeat').onclick = () => setHeat(true);
+
+function resetView() { camera.position.set(0, R * 0.7, R * 0.75); controls.target.set(0, 0, 0); controls.update(); }
+resetView();
+$('bReset').onclick = () => { stopFly(); resetView(); };
+
+// hover tooltip
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2(), tip = $('tip');
+$('c').addEventListener('pointermove', e => {
+  mouse.set(e.clientX / innerWidth * 2 - 1, -e.clientY / innerHeight * 2 + 1);
+  if (!blocks) { tip.style.display = 'none'; return; }
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(group.children)[0];
+  if (!hit) { tip.style.display = 'none'; return; }
+  const b = hit.object.userData;
+  let s = `<b>${b.c ? S.cap_m + '+' : b.h} m</b> predicted`;
+  if (b.n) s = `${b.n}<br>` + s;
+  if (b.t) s += `<br>OSM: ${b.ts} (~${b.t} m)`;
+  s += `<br><span style="opacity:.6">${b.s === 'osm' ? 'OpenStreetMap outline' : 'auto-detected outline'}</span>`;
+  tip.innerHTML = s; tip.style.display = 'block';
+  tip.style.left = (e.clientX + 14) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+});
+
+// flythrough
+let flying = false, t0 = 0;
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function stopFly() { flying = false; controls.enabled = true; $('bFly').classList.remove('on'); $('bFly').textContent = 'Fly through'; }
+$('bFly').onclick = () => { if (flying) return stopFly(); flying = true; t0 = performance.now(); controls.enabled = false;
+  $('bFly').classList.add('on'); $('bFly').textContent = 'Stop'; };
+function flyStep(now) {
+  const t = (now - t0) / 1000 * (reduced ? 0.015 : 0.04) * Math.PI * 2;
+  const rx = D.SX * 0.33, rz = D.SZ * 0.33, alt = 45 * ex + R * 0.06;
+  camera.position.set(Math.cos(t) * rx, alt, Math.sin(t) * rz);
+  camera.lookAt(Math.cos(t + 0.6) * rx * 0.5, 5, Math.sin(t + 0.6) * rz * 0.5);
+}
+
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+renderer.setAnimationLoop(now => { if (flying) flyStep(now); else controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

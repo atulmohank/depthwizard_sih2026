@@ -1,0 +1,18 @@
+# environment, data, caches
+.venv/
+data/
+cache/
+backup_raw/
+__pycache__/
+*.rar
+*.pt
+
+# web app results + caches
+app/jobs/
+app/_cache/
+
+# generated outputs / test inputs / local tool config (code only in git)
+out/
+images/
+runs/**/*.jpg
+.claude/

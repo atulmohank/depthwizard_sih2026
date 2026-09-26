@@ -1,0 +1,10 @@
+{
+  "mode": "fit",
+  "k": 4.734,
+  "spearman": 0.58,
+  "n": 43,
+  "fit_on": "cubbon",
+  "heldout_mae_before": 13.56,
+  "heldout_mae_after": 6.29,
+  "k_spread": 0.312
+}

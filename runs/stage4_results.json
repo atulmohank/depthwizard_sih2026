@@ -1,0 +1,27 @@
+{
+  "height_scale": 0.1013,
+  "raw_model_aligned": {
+    "MAE_m": 1.722,
+    "RMSE_m": 2.673,
+    "buildings_trees_MAE_m": 2.619,
+    "ground_MAE_m": 1.127,
+    "within_1m_pct": 48.907,
+    "within_2m_pct": 71.056
+  },
+  "finetuned": {
+    "MAE_m": 1.021,
+    "RMSE_m": 1.963,
+    "buildings_trees_MAE_m": 2.149,
+    "ground_MAE_m": 0.273,
+    "within_1m_pct": 69.162,
+    "within_2m_pct": 82.523
+  },
+  "finetuned_aligned": {
+    "MAE_m": 0.968,
+    "RMSE_m": 1.741,
+    "buildings_trees_MAE_m": 1.729,
+    "ground_MAE_m": 0.462,
+    "within_1m_pct": 71.744,
+    "within_2m_pct": 86.288
+  }
+}

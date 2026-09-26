@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DepthWizard 3D</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet">
+<style>
+  :root { --ink:#16222e; --paper:#eeeae0; --line:#b9b2a1; --accent:#e0602a; --text:#1d2833; }
+  html,body { margin:0; height:100%; background:var(--ink); overflow:hidden;
+    font-family:Barlow, "Segoe UI", system-ui, sans-serif; color:var(--text); }
+  #c { position:fixed; inset:0; }
+  .panel { position:fixed; left:16px; bottom:16px; width:260px; background:var(--paper);
+    border:1px solid var(--line); border-radius:6px; padding:14px 16px; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  h1 { font-family:"Barlow Condensed", Barlow, sans-serif; font-size:22px; margin:0 0 2px; letter-spacing:.3px; }
+  .sub { font-size:13px; opacity:.7; margin-bottom:12px; word-break:break-all; }
+  label { display:block; font-size:13px; margin:10px 0 4px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .row { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+  button { flex:1; font:600 13px Barlow, sans-serif; padding:7px 8px; border:1px solid var(--line);
+    background:#fff; color:var(--text); border-radius:4px; cursor:pointer; }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .note { font-size:12px; opacity:.65; margin-top:10px; line-height:1.4; }
+  .badge { display:inline-block; font-size:11px; padding:2px 6px; border-radius:3px; background:#d9d3c3; margin-top:6px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="panel">
+  <h1>DepthWizard</h1>
+  <div class="sub" id="title"></div>
+  <label for="ex">Height exaggeration <span id="exv"></span></label>
+  <input id="ex" type="range" min="0" max="4" step="0.05" value="1.2">
+  <div class="row">
+    <button id="bRaw">Raw model</button>
+    <button id="bFix" class="on">Fixed</button>
+  </div>
+  <div class="row">
+    <button id="bPhoto" class="on">Photo</button>
+    <button id="bHeat">Height colors</button>
+  </div>
+  <div class="row">
+    <button id="bFly">Fly through</button>
+    <button id="bWire">Wireframe</button>
+    <button id="bReset">Reset</button>
+  </div>
+  <span class="badge">Relative height (not metres yet)</span>
+  <div class="note">Drag to orbit, right-drag to pan, scroll to zoom.</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const D = /*__DATA__*/null;
+document.getElementById('title').textContent = D.title;
+
+// decode 16-bit heights (raw model + detrended)
+function decode(b64) {
+  const b = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return Float32Array.from(new Uint16Array(b.buffer), v => v / 65535);
+}
+const HRAW = decode(D.heightsRaw), HFIX = decode(D.heights);
+let heights = HFIX;
+
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16222e);
+scene.fog = new THREE.Fog(0x16222e, 18, 45);
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 200);
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+// terrain mesh
+const SY = 10, SX = SY * D.aspect;
+const geo = new THREE.PlaneGeometry(SX, SY, D.gw - 1, D.gh - 1);
+const pos = geo.attributes.position;
+const loader = new THREE.TextureLoader();
+const texPhoto = loader.load('data:image/jpeg;base64,' + D.photo);
+const texHeatFix = loader.load('data:image/jpeg;base64,' + D.heat);
+const texHeatRaw = loader.load('data:image/jpeg;base64,' + D.heatRaw);
+let texHeat = texHeatFix, showHeat = false;
+[texPhoto, texHeatFix, texHeatRaw].forEach(t => { t.anisotropy = renderer.capabilities.getMaxAnisotropy(); });
+const mat = new THREE.MeshStandardMaterial({ map:texPhoto, roughness:0.95, metalness:0 });
+const mesh = new THREE.Mesh(geo, mat);
+mesh.rotation.x = -Math.PI / 2;
+scene.add(mesh);
+
+let exag = 1.2;
+function applyHeights() {
+  for (let i = 0; i < pos.count; i++) pos.setZ(i, heights[i] * exag);
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  document.getElementById('exv').textContent = exag.toFixed(2) + '×';
+}
+applyHeights();
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x3a4450, 0.75));
+const sun = new THREE.DirectionalLight(0xfff3e0, 0.85);
+sun.position.set(-8, 12, 6);
+scene.add(sun);
+
+function resetView() {
+  camera.position.set(0, SY * 0.9, SY * 0.9);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+resetView();
+
+// UI
+const $ = id => document.getElementById(id);
+$('ex').oninput = e => { exag = +e.target.value; applyHeights(); };
+$('bPhoto').onclick = () => { showHeat = false; mat.map = texPhoto; mat.needsUpdate = true; $('bPhoto').classList.add('on'); $('bHeat').classList.remove('on'); };
+$('bHeat').onclick  = () => { showHeat = true;  mat.map = texHeat;  mat.needsUpdate = true; $('bHeat').classList.add('on'); $('bPhoto').classList.remove('on'); };
+function setSet(fix) {
+  heights = fix ? HFIX : HRAW; texHeat = fix ? texHeatFix : texHeatRaw;
+  if (showHeat) { mat.map = texHeat; mat.needsUpdate = true; }
+  $('bFix').classList.toggle('on', fix); $('bRaw').classList.toggle('on', !fix);
+  applyHeights();
+}
+$('bRaw').onclick = () => setSet(false);
+$('bFix').onclick = () => setSet(true);
+if (D.mode === 'off') { $('bFix').textContent = 'Fixed (off)'; }
+$('bWire').onclick  = () => { mat.wireframe = !mat.wireframe; $('bWire').classList.toggle('on', mat.wireframe); };
+$('bReset').onclick = () => { stopFly(); resetView(); };
+
+// flythrough: low-altitude loop over the scene
+let flying = false, t0 = 0;
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function stopFly() { flying = false; controls.enabled = true; $('bFly').classList.remove('on'); $('bFly').textContent = 'Fly through'; }
+$('bFly').onclick = () => {
+  if (flying) return stopFly();
+  flying = true; t0 = performance.now(); controls.enabled = false;
+  $('bFly').classList.add('on'); $('bFly').textContent = 'Stop';
+};
+function flyStep(now) {
+  const speed = reduced ? 0.02 : 0.06;
+  const t = (now - t0) / 1000 * speed * Math.PI * 2;
+  const rx = SX * 0.32, rz = SY * 0.32, alt = exag * 1.1 + 1.2;
+  camera.position.set(Math.cos(t) * rx, alt, Math.sin(t) * rz);
+  const la = t + 0.5;
+  camera.lookAt(Math.cos(la) * rx * 0.6, exag * 0.3, Math.sin(la) * rz * 0.6);
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+renderer.setAnimationLoop(now => {
+  if (flying) flyStep(now); else controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

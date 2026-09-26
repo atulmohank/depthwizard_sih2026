@@ -4,10 +4,10 @@ DepthWizard web app - FastAPI backend.
   app\run_app.bat      (or: .venv\Scripts\python -m uvicorn app.server:app --port 8000)
   -> http://127.0.0.1:8000
 """
-import io, json, os, re, threading, time, zipfile
+import io, json, os, re, threading, time, urllib.parse, zipfile
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -21,6 +21,7 @@ FILES = {"image.jpg": "image/jpeg", "height.bin": "application/octet-stream", "m
          "dsm_cm.png": "image/png", "report.json": "application/json", "buildings.json": "application/json",
          "osm_check.png": "image/png"}
 MAX_UPLOAD = 60 * 2**20
+NOMINATIM = "https://nominatim.openstreetmap.org/search"
 BRIDGE = '<script src="/static/viewer_bridge.js"></script>\n'
 NO_STORE = {"Cache-Control": "no-store"}
 
@@ -29,6 +30,9 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 EXEC = ThreadPoolExecutor(max_workers=1)   # one GPU -> one job at a time, others queue
 JOBS: dict[str, pipeline.Job] = {}
 LOCK = threading.Lock()
+GEO_CACHE: dict[str, list] = {}
+GEO_LOCK = threading.Lock()
+_geo_last = [0.0]
 
 
 class LocationReq(BaseModel):
@@ -119,6 +123,33 @@ def index():
 @app.get("/api/config")
 def config():
     return {"calibration": pipeline.calib_info(), "weights": os.path.relpath(pipeline.WEIGHTS, pipeline.ROOT)}
+
+
+@app.get("/api/geocode")
+def geocode(q: str = Query(min_length=2, max_length=200)):
+    """Place search via OpenStreetMap Nominatim. Proxied so we can follow its usage policy:
+    identifying User-Agent (city3d.UA), at most 1 request per second, results cached."""
+    key = re.sub(r"\s+", " ", q).strip().lower()
+    if key in GEO_CACHE:
+        return GEO_CACHE[key]
+    url = NOMINATIM + "?" + urllib.parse.urlencode({"q": key, "format": "jsonv2", "limit": 5})
+    with GEO_LOCK:
+        wait = 1.0 - (time.time() - _geo_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            data = json.loads(pipeline.city3d.http_get(url, timeout=15, tries=1))
+        except Exception as e:
+            raise HTTPException(502, f"Place search is unavailable right now ({e})")
+        finally:
+            _geo_last[0] = time.time()
+    out = [{"name": (r.get("name") or r["display_name"].split(",")[0]).strip(), "label": r["display_name"],
+            "lat": float(r["lat"]), "lon": float(r["lon"])}
+           for r in data if abs(float(r["lat"])) <= 85]
+    if len(GEO_CACHE) > 500:
+        GEO_CACHE.clear()
+    GEO_CACHE[key] = out
+    return out
 
 
 # ------------------------------------------------------------------ jobs

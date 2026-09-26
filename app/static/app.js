@@ -45,15 +45,64 @@ function updateArea(pan) {
   const b = areaBounds(); rect.setBounds(b); dot.setLatLng([lat, lon]);
   if (pan && !map.getBounds().contains(b)) map.fitBounds(b, { padding: [60, 60], maxZoom: 17 });
 }
-// a name filled in from a previous result belongs to that area -> clear it when the area moves
-function areaMoved() { if (S.nameAuto) { $('name').value = ''; S.nameAuto = false; } }
+// An auto-filled name belongs to its area -> clear it when the area moves away.
+// S.nameAuto: true = filled from a previous result (any move clears it),
+//             {lat, lon} = filled by place search (small nudges of the centre keep it).
+function areaMoved(force) {
+  const a = S.nameAuto;
+  if (!a) return;
+  if (!force && a !== true) {
+    const lat = +$('lat').value, lon = +$('lon').value;
+    const d = Math.hypot((lat - a.lat) * 111320, (lon - a.lon) * 111320 * Math.cos(lat * Math.PI / 180));
+    if (d <= +$('size').value / 2) return;
+  }
+  $('name').value = ''; S.nameAuto = false;
+}
 map.on('click', e => {
+  closeResults(); searchMsg('');
   if (S.phase === 'result') return;
   $('lat').value = e.latlng.lat.toFixed(6); $('lon').value = e.latlng.lng.toFixed(6); areaMoved(); updateArea(false);
 });
 $('lat').addEventListener('change', () => { areaMoved(); updateArea(true); });
 $('lon').addEventListener('change', () => { areaMoved(); updateArea(true); });
 $('name').addEventListener('input', () => { S.nameAuto = false; });
+
+// ---------------------------------------------------------------- place search (Nominatim via /api/geocode)
+function closeResults() { $('searchResults').hidden = true; }
+function searchMsg(text, bad) {
+  $('searchMsg').textContent = text; $('searchMsg').classList.toggle('bad', !!bad); $('searchMsg').hidden = !text;
+}
+function applyPlace(r) {
+  $('lat').value = r.lat.toFixed(6); $('lon').value = r.lon.toFixed(6);
+  $('name').value = r.name.slice(0, 60); S.nameAuto = { lat: r.lat, lon: r.lon };
+  updateArea(false);
+  map.fitBounds(areaBounds(), { padding: [60, 60], maxZoom: 17 });
+  searchMsg(r.label); $('searchMsg').title = r.label;
+}
+$('search').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('q').value.trim();
+  if (q.length < 2 || $('search').classList.contains('busy')) return;
+  $('search').classList.add('busy'); closeResults(); searchMsg('Searching…');
+  try {
+    const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error(await apiError(res));
+    const list = await res.json();
+    if (!list.length) { searchMsg(`No place found for “${q}”. Try adding the city name.`, true); return; }
+    applyPlace(list[0]);
+    const ul = $('searchResults'); ul.innerHTML = '';
+    for (const r of list.slice(1)) {                        // other matches, in case the first one is wrong
+      const li = document.createElement('li'), b = document.createElement('button');
+      b.type = 'button'; b.title = r.label;
+      b.innerHTML = `<b>${escapeHtml(r.name)}</b> <span class="muted">${escapeHtml(r.label.split(',').slice(1).join(',').trim())}</span>`;
+      b.onclick = () => { applyPlace(r); closeResults(); };
+      li.appendChild(b); ul.appendChild(li);
+    }
+    ul.hidden = list.length < 2;
+  } catch (err) { searchMsg(err.message || 'Place search failed.', true); }
+  finally { $('search').classList.remove('busy'); }
+});
+$('q').addEventListener('keydown', e => { if (e.key === 'Escape') { closeResults(); searchMsg(''); } });
 $('size').addEventListener('input', () => { $('sizev').textContent = `${$('size').value} × ${$('size').value} m`; updateArea(false); });
 updateArea(false);
 map.fitBounds(areaBounds(), { padding: [60, 60], maxZoom: 17 });
@@ -72,7 +121,7 @@ $('tabUpload').onclick = () => setSource('upload');
 
 function setFile(f) {
   if (!f || !f.type.startsWith('image/')) { showErr('Please choose an image file (JPG or PNG).'); return; }
-  hideErr(); S.file = f; areaMoved();
+  hideErr(); S.file = f; areaMoved(true);
   $('name').placeholder = f.name.replace(/\.[^.]+$/, '');
   $('dropText').innerHTML = `<b>${escapeHtml(f.name)}</b><br>${(f.size / 1048576).toFixed(1)} MB &middot; click to change`;
   if ($('upImg').src) URL.revokeObjectURL($('upImg').src);
@@ -87,14 +136,14 @@ drop.addEventListener('drop', e => { e.preventDefault(); setFile(e.dataTransfer.
 // ---------------------------------------------------------------- phases
 function showPickStage() {
   $('c2d').hidden = true; $('v3d').hidden = true; $('legend').hidden = true; $('tip2d').hidden = true;
-  $('map').hidden = S.source !== 'map'; $('uploadPreview').hidden = S.source !== 'upload';
+  $('map').hidden = $('search').hidden = S.source !== 'map'; $('uploadPreview').hidden = S.source !== 'upload';
   if (S.source === 'map') map.invalidateSize();
 }
 function setPhase(p) {
   S.phase = p;
   $('secSource').hidden = p === 'result'; $('secView').hidden = p !== 'result';
   if (p === 'pick') { showPickStage(); history.replaceState(null, '', location.pathname); }
-  else { $('map').hidden = true; $('uploadPreview').hidden = true; }
+  else { $('map').hidden = true; $('search').hidden = true; $('uploadPreview').hidden = true; }
 }
 $('newArea').onclick = () => { setPhase('pick'); $('prog').hidden = true; refreshRecent(); };
 

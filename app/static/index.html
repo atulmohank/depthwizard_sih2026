@@ -42,6 +42,9 @@
       <p class="hint">Uploaded images have no map position, so buildings are auto-detected (no OpenStreetMap outlines).</p>
     </div>
 
+    <label class="lbl">Name <span class="muted">(optional)</span>
+      <input id="name" type="text" maxlength="60" placeholder="e.g. Cubbon Park" autocomplete="off"></label>
+
     <label class="check"><input id="calib" type="checkbox" checked>
       <span>Bengaluru height calibration <span id="calibK" class="muted"></span></span></label>
 
@@ -64,6 +67,7 @@
       <button data-mode="heat">Colour by height</button>
       <button data-mode="surface">Raw surface</button>
       <button data-mode="contours">Contours</button>
+      <button data-mode="swipe" class="wide">Swipe: Satellite | Height map</button>
     </div>
 
     <div id="opt3d" class="opts">
@@ -101,6 +105,11 @@
   <div id="map"></div>
   <div id="uploadPreview" hidden><img id="upImg" alt="Uploaded image preview"><p id="upEmpty">Choose an image on the left</p></div>
   <canvas id="c2d" hidden></canvas>
+  <div id="swipe" hidden role="slider" tabindex="0" aria-label="Swipe divider: satellite left, height map right"
+       aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+    <span class="knob" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M9 6l-6 6 6 6M15 6l6 6-6 6"
+      fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+  </div>
   <iframe id="v3d" hidden title="3D viewer"></iframe>
   <div id="tip2d" class="tip" hidden></div>
   <div id="legend" hidden><span>0 m</span><i class="ramp"></i><span id="legMax"></span></div>

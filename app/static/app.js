@@ -4,8 +4,8 @@ const $ = id => document.getElementById(id);
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const MODES_3D = new Set(['blocks', 'heat', 'surface']);
 const MODE_NAMES = { satellite: 'Satellite', height: 'Height map', blocks: '3D blocks', heat: 'Colour by height',
-  surface: 'Raw surface', contours: 'Contours' };
-const LEGEND_MODES = new Set(['height', 'heat', 'contours']);
+  surface: 'Raw surface', contours: 'Contours', swipe: 'Satellite | Height map' };
+const LEGEND_MODES = new Set(['height', 'heat', 'contours', 'swipe']);
 
 // ---------------------------------------------------------------- turbo colour ramp (same as cv2.COLORMAP_TURBO)
 const TURBO = (() => {
@@ -24,7 +24,7 @@ const turboCss = t => { const k = Math.round(Math.min(1, Math.max(0, t)) * 255) 
 document.querySelector('#legend .ramp').style.background =
   `linear-gradient(to right, ${Array.from({ length: 11 }, (_, i) => turboCss(i / 10)).join(',')})`;
 
-const S = { source: 'map', file: null, watchToken: 0, R: null, mode: 'blocks', v3dReady: false };
+const S = { source: 'map', file: null, watchToken: 0, R: null, mode: 'blocks', v3dReady: false, swipe: 0.5, nameAuto: false };
 const fmtH = h => (h == null || !isFinite(h)) ? '–' : `${h.toFixed(1)} m`;
 
 // ---------------------------------------------------------------- map picker
@@ -45,12 +45,15 @@ function updateArea(pan) {
   const b = areaBounds(); rect.setBounds(b); dot.setLatLng([lat, lon]);
   if (pan && !map.getBounds().contains(b)) map.fitBounds(b, { padding: [60, 60], maxZoom: 17 });
 }
+// a name filled in from a previous result belongs to that area -> clear it when the area moves
+function areaMoved() { if (S.nameAuto) { $('name').value = ''; S.nameAuto = false; } }
 map.on('click', e => {
   if (S.phase === 'result') return;
-  $('lat').value = e.latlng.lat.toFixed(6); $('lon').value = e.latlng.lng.toFixed(6); updateArea(false);
+  $('lat').value = e.latlng.lat.toFixed(6); $('lon').value = e.latlng.lng.toFixed(6); areaMoved(); updateArea(false);
 });
-$('lat').addEventListener('change', () => updateArea(true));
-$('lon').addEventListener('change', () => updateArea(true));
+$('lat').addEventListener('change', () => { areaMoved(); updateArea(true); });
+$('lon').addEventListener('change', () => { areaMoved(); updateArea(true); });
+$('name').addEventListener('input', () => { S.nameAuto = false; });
 $('size').addEventListener('input', () => { $('sizev').textContent = `${$('size').value} × ${$('size').value} m`; updateArea(false); });
 updateArea(false);
 map.fitBounds(areaBounds(), { padding: [60, 60], maxZoom: 17 });
@@ -69,7 +72,8 @@ $('tabUpload').onclick = () => setSource('upload');
 
 function setFile(f) {
   if (!f || !f.type.startsWith('image/')) { showErr('Please choose an image file (JPG or PNG).'); return; }
-  hideErr(); S.file = f;
+  hideErr(); S.file = f; areaMoved();
+  $('name').placeholder = f.name.replace(/\.[^.]+$/, '');
   $('dropText').innerHTML = `<b>${escapeHtml(f.name)}</b><br>${(f.size / 1048576).toFixed(1)} MB &middot; click to change`;
   if ($('upImg').src) URL.revokeObjectURL($('upImg').src);
   $('upImg').src = URL.createObjectURL(f); $('upEmpty').hidden = true;
@@ -109,12 +113,14 @@ $('go').onclick = async () => {
   let res;
   try {
     if (S.source === 'map') {
-      const body = { lat: +$('lat').value, lon: +$('lon').value, size_m: +$('size').value, calibrate: $('calib').checked };
+      const body = { lat: +$('lat').value, lon: +$('lon').value, size_m: +$('size').value, calibrate: $('calib').checked,
+        name: $('name').value.trim() };
       res = await fetch('/api/jobs/location', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     } else {
       if (!S.file) { showErr('Choose an image to upload first.'); return; }
       const fd = new FormData();
       fd.append('file', S.file); fd.append('gsd', $('gsd').value); fd.append('calibrate', $('calib').checked);
+      fd.append('name', $('name').value.trim());
       setProgress({ pct: 0, stage: 'Uploading image…', log: [] });
       res = await fetch('/api/jobs/upload', { method: 'POST', body: fd });
     }
@@ -166,6 +172,13 @@ async function openResult(id) {
     $('resTitle').textContent = meta.title;
     $('dlZip').href = `/api/jobs/${id}/heightmap.zip`;
     renderStats(meta);
+    if (meta.kind === 'location') {                   // "New area" starts from this area (e.g. to rename it)
+      const p = meta.params;
+      $('lat').value = p.lat; $('lon').value = p.lon; $('size').value = p.size_m;
+      $('sizev').textContent = `${p.size_m} × ${p.size_m} m`; $('calib').checked = !!p.calibrate;
+      $('name').value = p.name || ''; S.nameAuto = true; updateArea(false);
+      if (S.source !== 'map') setSource('map');
+    }
     setPhase('result');
     history.replaceState(null, '', `#job=${id}`);
     S.v3dReady = false; $('v3d').src = `/api/jobs/${id}/viewer`;
@@ -199,7 +212,7 @@ function setMode(m) {
   const is3d = MODES_3D.has(m);
   $('c2d').hidden = is3d; $('v3d').hidden = !is3d;
   $('opt3d').hidden = !is3d; $('opt2d').hidden = is3d; $('optContour').hidden = m !== 'contours';
-  $('legend').hidden = !LEGEND_MODES.has(m);
+  $('legend').hidden = !LEGEND_MODES.has(m); $('swipe').hidden = m !== 'swipe';
   $('tip2d').hidden = true; $('readout').textContent = '–';
   if (is3d) post({ type: 'mode', mode: m });
   else draw();
@@ -264,7 +277,43 @@ function draw() {
     ctx.fillStyle = 'rgba(22,34,46,0.55)'; ctx.fillRect(0, 0, R.W, R.H);
     drawContours(R, s);
   }
+  if (S.mode === 'swipe') drawSwipe(R, r);
 }
+
+// swipe: satellite left of the divider, height map right. The divider stays put in screen space while you pan/zoom.
+function drawSwipe(R, r) {
+  const x = Math.round(S.swipe * r.width), { s, tx, ty } = R.view;
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.beginPath(); ctx.rect(x, 0, r.width - x, r.height); ctx.clip();
+  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * tx, dpr * ty); ctx.drawImage(R.heat, 0, 0, R.W, R.H);
+  ctx.restore();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);                    // divider + labels (also end up in screenshots)
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x - 2, 0, 4, r.height);
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, r.height);
+  ctx.font = '600 13px Barlow, "Segoe UI", sans-serif'; ctx.textBaseline = 'middle';
+  const pill = (text, right) => {
+    const w = ctx.measureText(text).width + 18, px = right ? x + 10 : x - 10 - w;
+    ctx.fillStyle = 'rgba(238,234,224,0.92)'; ctx.beginPath(); ctx.roundRect(px, 12, w, 24, 4); ctx.fill();
+    ctx.fillStyle = '#1d2833'; ctx.fillText(text, px + 9, 24);
+  };
+  if (x > 90) pill('Satellite', false);
+  if (r.width - x > 110) pill('Height map', true);
+  const el = $('swipe');
+  el.style.left = x + 'px'; el.setAttribute('aria-valuenow', Math.round(S.swipe * 100));
+}
+function setSwipe(f) { S.swipe = Math.min(0.98, Math.max(0.02, f)); draw(); }
+const sw = $('swipe');
+sw.addEventListener('pointerdown', e => { sw.setPointerCapture(e.pointerId); sw.classList.add('drag'); e.preventDefault(); });
+sw.addEventListener('pointermove', e => {
+  if (!sw.hasPointerCapture(e.pointerId)) return;
+  const r = cv.getBoundingClientRect(); setSwipe((e.clientX - r.left) / r.width);
+});
+sw.addEventListener('pointerup', () => sw.classList.remove('drag'));
+sw.addEventListener('keydown', e => {
+  const step = e.shiftKey ? 0.1 : 0.02;
+  const f = { ArrowLeft: S.swipe - step, ArrowRight: S.swipe + step, Home: 0, End: 1 }[e.key];
+  if (f !== undefined) { e.preventDefault(); setSwipe(f); }
+});
 
 // contours: smoothed, <=512 px copy of the height grid -> d3-contour (marching squares) -> Path2D
 function contourGrid(R) {
@@ -380,7 +429,9 @@ async function refreshRecent() {
     $('recent').innerHTML = '';
     for (const j of list) {
       const li = document.createElement('li'), b = document.createElement('button');
-      b.innerHTML = `<span>${escapeHtml(j.title)}</span><small>${j.size_m ? j.size_m[0] + ' m' : ''} · ${j.buildings} bldg</small>`;
+      const sub = [j.size_m ? `${j.size_m[0]} m` : '', `${j.buildings} bldg`, j.calibrated ? '' : 'raw'].filter(Boolean).join(' · ');
+      b.innerHTML = `<span class="t${j.named ? '' : ' coords'}">${escapeHtml(j.title)}</span><small>${sub}</small>`;
+      b.title = j.named ? j.title : 'Unnamed area. Open it, then “New area” to give it a name';
       b.classList.toggle('cur', S.phase === 'result' && S.R && S.R.id === j.id);
       b.onclick = () => { hideErr(); openResult(j.id); };
       li.appendChild(b); $('recent').appendChild(li);

@@ -4,7 +4,7 @@ DepthWizard web app - FastAPI backend.
   app\run_app.bat      (or: .venv\Scripts\python -m uvicorn app.server:app --port 8000)
   -> http://127.0.0.1:8000
 """
-import io, json, os, re, threading, zipfile
+import io, json, os, re, threading, time, zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -36,6 +36,46 @@ class LocationReq(BaseModel):
     lon: float = Field(ge=-180, le=180)
     size_m: float = Field(ge=300, le=1000)
     calibrate: bool = True
+    name: str = Field(default="", max_length=200)
+
+
+def _clean_name(s):
+    return re.sub(r"\s+", " ", s or "").strip()[:60]
+
+
+def _area_key(kind, p):
+    """Same area = same centre (to ~11 m) and size, or the same uploaded file + resolution."""
+    if kind == "location":
+        return f"loc|{p['lat']:.4f}|{p['lon']:.4f}|{round(p['size_m'])}"
+    return f"up|{p.get('file_sha')}|{p.get('gsd')}"
+
+
+def _all_metas():
+    out = []
+    if os.path.isdir(pipeline.JOBS_DIR):
+        for name in os.listdir(pipeline.JOBS_DIR):
+            p = os.path.join(pipeline.JOBS_DIR, name, "meta.json")
+            if ID_RE.match(name) and os.path.exists(p):
+                out.append(json.load(open(p, encoding="utf-8")))
+    out.sort(key=lambda m: -m.get("updated", m.get("created", 0)))
+    return out
+
+
+def _area_name(kind, params):
+    """Latest name the user gave this area (so a re-run with calibration toggled keeps its name)."""
+    key = _area_key(kind, params)
+    return next((m["params"]["name"] for m in _all_metas()
+                 if m.get("params", {}).get("name") and _area_key(m["kind"], m["params"]) == key), "")
+
+
+def _touch(j, name):
+    """A finished job was requested again: move it to the top of Recent and apply a new name."""
+    m = j.meta
+    m["updated"] = time.time()
+    if name:
+        m["title"] = name
+        m.setdefault("params", {})["name"] = name
+    json.dump(m, open(os.path.join(pipeline.job_dir(j.id), "meta.json"), "w", encoding="utf-8"), indent=1)
 
 
 def _job(job_id):
@@ -50,11 +90,19 @@ def _job(job_id):
     return j
 
 
-def _submit(job_id, kind, params):
+def _submit(job_id, kind, params, name):
+    name = _clean_name(name) or _area_name(kind, params)
+    params["name"] = name
+    if name:
+        params["title"] = name
     with LOCK:
         j = JOBS.get(job_id) or pipeline.Job.from_disk(job_id)
         retry = j and (j.state == "error" or (j.state == "done" and (j.meta or {}).get("osm_timeout")))
         if j and not retry:                 # already done, running or queued -> reuse
+            if j.state == "done":
+                _touch(j, name)
+            elif name:
+                j.params["name"] = j.params["title"] = name
             JOBS[job_id] = j
             return j
         j = JOBS[job_id] = pipeline.Job(job_id, kind, params)
@@ -79,12 +127,13 @@ def new_location(req: LocationReq):
     lat, lon, size = round(req.lat, 6), round(req.lon, 6), round(req.size_m)
     job_id = pipeline.sha("loc", lat, lon, size, req.calibrate)[:12]
     j = _submit(job_id, "location", {"lat": lat, "lon": lon, "size_m": size, "calibrate": req.calibrate,
-                                     "title": f"{lat:.4f}, {lon:.4f}"})
+                                     "title": f"{lat:.4f}, {lon:.4f}"}, req.name)
     return {"job_id": j.id, "state": j.state}
 
 
 @app.post("/api/jobs/upload")
-async def new_upload(file: UploadFile = File(...), gsd: float = Form(0.30), calibrate: bool = Form(True)):
+async def new_upload(file: UploadFile = File(...), gsd: float = Form(0.30), calibrate: bool = Form(True),
+                     name: str = Form("")):
     data = await file.read()
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "Image is larger than 60 MB")
@@ -104,23 +153,23 @@ async def new_upload(file: UploadFile = File(...), gsd: float = Form(0.30), cali
         f.write(data)
     title = os.path.splitext(os.path.basename(file.filename or "upload"))[0][:60] or "upload"
     j = _submit(job_id, "upload", {"path": path, "gsd": gsd, "calibrate": calibrate, "title": title,
-                                   "file_sha": file_sha})
+                                   "file_sha": file_sha}, name)
     return {"job_id": j.id, "state": j.state}
 
 
 @app.get("/api/jobs")
 def recent(limit: int = 20):
-    out = []
-    if os.path.isdir(pipeline.JOBS_DIR):
-        for name in os.listdir(pipeline.JOBS_DIR):
-            p = os.path.join(pipeline.JOBS_DIR, name, "meta.json")
-            if ID_RE.match(name) and os.path.exists(p):
-                m = json.load(open(p, encoding="utf-8"))
-                s = m.get("stats", {})
-                out.append({"id": name, "title": m.get("title"), "kind": m.get("kind"), "created": m.get("created", 0),
-                            "size_m": m.get("size_m"), "buildings": s.get("osm", 0) + s.get("auto", 0),
-                            "calibrated": s.get("calibration", {}).get("mode") == "load"})
-    out.sort(key=lambda r: -r["created"])
+    """Finished results, newest first, one entry per area (the most recently generated/opened variant)."""
+    out, seen = [], set()
+    for m in _all_metas():
+        key = _area_key(m.get("kind"), m.get("params", {}))
+        if key in seen:
+            continue
+        seen.add(key)
+        s = m.get("stats", {})
+        out.append({"id": m["id"], "title": m.get("title"), "named": bool(m.get("params", {}).get("name")),
+                    "kind": m.get("kind"), "size_m": m.get("size_m"), "buildings": s.get("osm", 0) + s.get("auto", 0),
+                    "calibrated": s.get("calibration", {}).get("mode") == "load"})
     return out[:limit]
 
 

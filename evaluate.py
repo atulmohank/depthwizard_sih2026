@@ -23,6 +23,7 @@ OBJ_M = 2.5  # pixels taller than 2.5 m = buildings/trees (standard nDSM thresho
 def run(model, loader, device, amp, div, scale, align):
     model.eval()
     s = {"abs": 0.0, "sq": 0.0, "n": 0, "obj_abs": 0.0, "obj_n": 0, "w1": 0, "w2": 0, "gnd_abs": 0.0, "gnd_n": 0}
+    c = torch.zeros(5, dtype=torch.float64, device=device)   # sum p, g, p^2, g^2, p*g  (Pearson r, all pixels pooled)
     for x, y, _ in loader:
         x = x.to(device, non_blocking=True)
         gt_t = y.to(device).float() / div
@@ -38,11 +39,18 @@ def run(model, loader, device, amp, div, scale, align):
         o = gm > OBJ_M
         s["obj_abs"] += e[o].sum().item(); s["obj_n"] += int(o.sum())
         s["gnd_abs"] += e[~o].sum().item(); s["gnd_n"] += int((~o).sum())
+        pd, gd = pm.double(), gm.double()
+        c += torch.stack([pd.sum(), gd.sum(), (pd * pd).sum(), (gd * gd).sum(), (pd * gd).sum()])
     n = max(s["n"], 1)
-    return {"MAE_m": s["abs"] / n, "RMSE_m": math.sqrt(s["sq"] / n),
+    sp, sg, spp, sgg, spg = c.tolist()
+    cov, vp, vg = spg - sp * sg / n, spp - sp * sp / n, sgg - sg * sg / n
+    r = cov / math.sqrt(vp * vg) if vp > 0 and vg > 0 else float("nan")
+    out = {"MAE_m": s["abs"] / n, "RMSE_m": math.sqrt(s["sq"] / n), "pearson_r": r,
             "buildings_trees_MAE_m": s["obj_abs"] / max(s["obj_n"], 1),
             "ground_MAE_m": s["gnd_abs"] / max(s["gnd_n"], 1),
             "within_1m_pct": 100 * s["w1"] / n, "within_2m_pct": 100 * s["w2"] / n}
+    print(f"      MAE {out['MAE_m']:.3f} m | RMSE {out['RMSE_m']:.3f} m | Pearson r {r:.3f}")
+    return out
 
 
 def main():
@@ -81,6 +89,7 @@ def main():
     rows = [
         ("Overall height error (MAE)", "MAE_m", "m", True),
         ("RMSE", "RMSE_m", "m", True),
+        ("Correlation with true height (Pearson r)", "pearson_r", "r", False),
         ("Buildings/trees error", "buildings_trees_MAE_m", "m", True),
         ("Ground error", "ground_MAE_m", "m", True),
         ("Pixels within 1 m", "within_1m_pct", "%", False),
@@ -88,10 +97,13 @@ def main():
     ]
     lines = ["| Metric | Raw model* | Fine-tuned (ours, no help) | Change |", "|---|---|---|---|"]
     for name, k, u, lb in rows:
+        if u == "r":
+            lines.append(f"| {name} | {raw[k]:.3f} | **{ft[k]:.3f}** | {ft[k] - raw[k]:+.3f} |")
+            continue
         lines.append(f"| {name} | {raw[k]:.2f} {u} | **{ft[k]:.2f} {u}** | {imp(raw[k], ft[k], lb)} |")
     lines.append("")
     lines.append(f"*Raw model got a per-tile scale fit using the true heights (best case for it). "
-                 f"Like-for-like, fine-tuned with the same fit: MAE {fta['MAE_m']:.2f} m.")
+                 f"Like-for-like, fine-tuned with the same fit: MAE {fta['MAE_m']:.2f} m, r {fta['pearson_r']:.3f}.")
     lines.append(f"Validation: {len(ds)} tiles from 4 ISPRS Potsdam patches never used in training. "
                  f"Scale {a.height_scale} m per nDSM unit, derived from the official DSM.")
     table = "\n".join(lines)

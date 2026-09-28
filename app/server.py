@@ -256,3 +256,53 @@ def heightmap_zip(job_id: str):
         z.writestr("README.txt", readme)
     return Response(buf.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{base}_heightmap.zip"'})
+
+
+def _geotiff_bytes(d, meta):
+    """Height in metres as a single-band float32 GeoTIFF (tifffile + hand-written GeoTIFF tags).
+    Location jobs: EPSG:3857, placed with the same numbers as dsm_cm.pgw. Uploads: plain TIFF, no CRS."""
+    import cv2, numpy as np, tifffile
+    hm = cv2.imread(os.path.join(d, "dsm_cm.png"), cv2.IMREAD_UNCHANGED).astype(np.float32) / 100
+    tags = []
+    pgw = os.path.join(d, "dsm_cm.pgw")
+    if meta.get("world_file") and os.path.exists(pgw):
+        a, _, _, e, c, f = [float(v) for v in open(pgw).read().split()]
+        # world file = centre of the top-left pixel; GeoTIFF tiepoint (PixelIsArea) = its outer corner
+        tags += [(33550, "d", 3, (a, -e, 0.0), False),                                 # ModelPixelScale
+                 (33922, "d", 6, (0.0, 0.0, 0.0, c - a / 2, f - e / 2, 0.0), False),   # ModelTiepoint
+                 (34735, "H", 16, (1, 1, 0, 3,                                         # GeoKeyDirectory
+                                   1024, 0, 1, 1,         # GTModelType = projected
+                                   1025, 0, 1, 1,         # GTRasterType = PixelIsArea
+                                   3072, 0, 1, 3857), False)]  # ProjectedCSType = EPSG:3857
+    buf = io.BytesIO()
+    tifffile.imwrite(buf, hm, photometric="minisblack", compression="zlib", extratags=tags,
+                     description=f"DepthWizard DSM - {meta.get('title')} - height in metres", metadata=None)
+    return buf.getvalue()
+
+
+@app.get("/api/jobs/{job_id}/dsm_geotiff.zip")
+def dsm_geotiff(job_id: str):
+    d = _done(job_id)
+    meta = json.load(open(os.path.join(d, "meta.json"), encoding="utf-8"))
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", meta.get("title", job_id)).strip("_") or job_id
+    geo = bool(meta.get("world_file")) and os.path.exists(os.path.join(d, "dsm_cm.pgw"))
+    cal = meta.get("stats", {}).get("calibration", {})
+    readme = (f"DepthWizard DSM (GeoTIFF) - {meta.get('title')}\n\n"
+              f"{base}_dsm.tif  single-band float32, value = height above ground in METRES\n"
+              f"               {meta['W']} x {meta['H']} px, {meta['gsd']:.3f} m per pixel on the ground\n")
+    if geo:
+        readme += ("               georeferenced in EPSG:3857 (Web Mercator) - opens in place in QGIS\n"
+                   + (f"\nHeights calibrated with city factor k={cal.get('k')} (fitted on {cal.get('fit_on')}).\n"
+                      if cal.get("mode") == "load" else "\nRaw model heights (no city calibration).\n"))
+    else:
+        readme += ("               uploaded image - no map position, so no CRS / georeference\n\n"
+                   "Values are relative height (uncalibrated): the metre scale depends on the ground resolution "
+                   f"entered at upload ({meta['params'].get('gsd')} m/px)"
+                   + (f" and the Bengaluru city factor k={cal.get('k')}" if cal.get("mode") == "load" else "")
+                   + ", not on a check against this area.\n")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"{base}_dsm.tif", _geotiff_bytes(d, meta))
+        z.writestr("README.txt", readme)
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{base}_dsm_geotiff.zip"'})

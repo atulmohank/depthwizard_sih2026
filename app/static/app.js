@@ -220,6 +220,9 @@ async function openResult(id) {
     $('legMax').textContent = `${meta.hmax}+ m`;
     $('resTitle').textContent = meta.title;
     $('dlZip').href = `/api/jobs/${id}/heightmap.zip`;
+    $('dlTif').href = `/api/jobs/${id}/dsm_geotiff.zip`;
+    $('dlTif').title = meta.world_file ? 'Float32 metres, EPSG:3857 - opens in place in QGIS'
+      : 'Float32 relative height, no map position (uploaded image)';
     renderStats(meta);
     if (meta.kind === 'location') {                   // "New area" starts from this area (e.g. to rename it)
       const p = meta.params;

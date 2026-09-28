@@ -4,8 +4,9 @@ const $ = id => document.getElementById(id);
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const MODES_3D = new Set(['blocks', 'heat', 'surface']);
 const MODE_NAMES = { satellite: 'Satellite', height: 'Height map', blocks: '3D blocks', heat: 'Colour by height',
-  surface: 'Raw surface', contours: 'Contours', swipe: 'Satellite | Height map' };
-const LEGEND_MODES = new Set(['height', 'heat', 'contours', 'swipe']);
+  surface: 'Raw surface', contours: 'Contours', slope: 'Slope', swipe: 'Satellite | Height map' };
+const LEGEND_MODES = new Set(['height', 'heat', 'contours', 'swipe', 'slope']);
+const SLOPE_MAX = 45;   // degrees at the top of the slope ramp (steeper = same colour)
 
 // ---------------------------------------------------------------- turbo colour ramp (same as cv2.COLORMAP_TURBO)
 const TURBO = (() => {
@@ -21,11 +22,26 @@ const TURBO = (() => {
 })();
 const turboCss = t => { const k = Math.round(Math.min(1, Math.max(0, t)) * 255) * 3;
   return `rgb(${TURBO[k]},${TURBO[k + 1]},${TURBO[k + 2]})`; };
-document.querySelector('#legend .ramp').style.background =
-  `linear-gradient(to right, ${Array.from({ length: 11 }, (_, i) => turboCss(i / 10)).join(',')})`;
+// slope ramp: flat = pale yellow -> orange -> red -> dark red at SLOPE_MAX degrees and steeper
+const SLOPE_STOPS = [[255, 255, 204], [254, 217, 118], [253, 141, 60], [227, 26, 28], [103, 0, 13]];
+const SLOPE_LUT = (() => {
+  const lut = new Uint8ClampedArray(256 * 3), n = SLOPE_STOPS.length - 1;
+  for (let i = 0; i < 256; i++) {
+    const f = i / 255 * n, j = Math.min(n - 1, Math.floor(f)), t = f - j;
+    for (let c = 0; c < 3; c++) lut[i * 3 + c] = SLOPE_STOPS[j][c] + (SLOPE_STOPS[j + 1][c] - SLOPE_STOPS[j][c]) * t;
+  }
+  return lut;
+})();
+const slopeCss = t => { const k = Math.round(Math.min(1, Math.max(0, t)) * 255) * 3;
+  return `rgb(${SLOPE_LUT[k]},${SLOPE_LUT[k + 1]},${SLOPE_LUT[k + 2]})`; };
+const rampCss = f => `linear-gradient(to right, ${Array.from({ length: 11 }, (_, i) => f(i / 10)).join(',')})`;
+// legend for the current mode: colour function + end labels
+const legendSpec = () => S.mode === 'slope' ? { col: slopeCss, lo: '0°', hi: `${SLOPE_MAX}+°` }
+  : { col: turboCss, lo: '0 m', hi: `${S.R.hmax}+ m` };
 
 const S = { source: 'map', file: null, watchToken: 0, R: null, mode: 'blocks', v3dReady: false, swipe: 0.5, nameAuto: false };
 const fmtH = h => (h == null || !isFinite(h)) ? '–' : `${h.toFixed(1)} m`;
+const fmtDeg = d => (d == null || !isFinite(d)) ? '–' : `${d.toFixed(1)}°`;
 
 // ---------------------------------------------------------------- map picker
 const map = L.map('map', { zoomControl: true, attributionControl: true });
@@ -215,9 +231,8 @@ async function openResult(id) {
     let peak = 0;
     for (let i = 0; i < u16.length; i++) { grid[i] = u16[i] / 100; if (grid[i] > peak) peak = grid[i]; }
     S.R = { id, meta, img, grid, peak, W: meta.W, H: meta.H, gw: meta.gw, gh: meta.gh, hmax: meta.hmax,
-      heat: heatCanvas(grid, meta.gw, meta.gh, meta.hmax), contours: {}, cgrid: null, view: null };
+      heat: heatCanvas(grid, meta.gw, meta.gh, meta.hmax), slope: null, contours: {}, cgrid: null, view: null };
     $('interval').value = meta.hmax <= 30 ? '2' : '5';
-    $('legMax').textContent = `${meta.hmax}+ m`;
     $('resTitle').textContent = meta.title;
     $('dlZip').href = `/api/jobs/${id}/heightmap.zip`;
     $('dlTif').href = `/api/jobs/${id}/dsm_geotiff.zip`;
@@ -265,6 +280,9 @@ function setMode(m) {
   $('c2d').hidden = is3d; $('v3d').hidden = !is3d;
   $('opt3d').hidden = !is3d; $('opt2d').hidden = is3d; $('optContour').hidden = m !== 'contours';
   $('legend').hidden = !LEGEND_MODES.has(m); $('swipe').hidden = m !== 'swipe';
+  if (S.R) { const L = legendSpec(); $('legMin').textContent = L.lo; $('legMax').textContent = L.hi;
+    document.querySelector('#legend .ramp').style.background = rampCss(L.col); }
+  $('readLbl').textContent = m === 'slope' ? 'Slope under cursor' : 'Height under cursor';
   $('tip2d').hidden = true; $('readout').textContent = '–';
   if (is3d) post({ type: 'mode', mode: m });
   else draw();
@@ -324,12 +342,41 @@ function draw() {
   ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * tx, dpr * ty);
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
   if (S.mode === 'height') ctx.drawImage(R.heat, 0, 0, R.W, R.H);
+  else if (S.mode === 'slope') ctx.drawImage(slopeLayer(R).canvas, 0, 0, R.W, R.H);
   else ctx.drawImage(R.img, 0, 0, R.W, R.H);
   if (S.mode === 'contours') {
     ctx.fillStyle = 'rgba(22,34,46,0.55)'; ctx.fillRect(0, 0, R.W, R.H);
     drawContours(R, s);
   }
   if (S.mode === 'swipe') drawSwipe(R, r);
+}
+
+// slope in degrees from the height grid: central differences (one-sided at the edges), with the grid's
+// real pixel size in metres (height.bin can be coarser than the image, so dx = gsd * W / gw)
+function slopeGrid(grid, gw, gh, dx, dy) {
+  const out = new Float32Array(gw * gh), DEG = 180 / Math.PI;
+  for (let y = 0; y < gh; y++) {
+    const y0 = Math.max(0, y - 1), y1 = Math.min(gh - 1, y + 1);
+    for (let x = 0; x < gw; x++) {
+      const x0 = Math.max(0, x - 1), x1 = Math.min(gw - 1, x + 1);
+      const gx = (grid[y * gw + x1] - grid[y * gw + x0]) / ((x1 - x0) * dx);
+      const gy = (grid[y1 * gw + x] - grid[y0 * gw + x]) / ((y1 - y0) * dy);
+      out[y * gw + x] = Math.atan(Math.hypot(gx, gy)) * DEG;
+    }
+  }
+  return out;
+}
+function slopeLayer(R) {
+  if (R.slope) return R.slope;
+  const deg = slopeGrid(R.grid, R.gw, R.gh, R.meta.gsd * R.W / R.gw, R.meta.gsd * R.H / R.gh);
+  const c = document.createElement('canvas'); c.width = R.gw; c.height = R.gh;
+  const x = c.getContext('2d'), im = x.createImageData(R.gw, R.gh), d = im.data;
+  for (let i = 0; i < deg.length; i++) {
+    const k = Math.round(Math.min(1, deg[i] / SLOPE_MAX) * 255) * 3;
+    d[i * 4] = SLOPE_LUT[k]; d[i * 4 + 1] = SLOPE_LUT[k + 1]; d[i * 4 + 2] = SLOPE_LUT[k + 2]; d[i * 4 + 3] = 255;
+  }
+  x.putImageData(im, 0, 0);
+  return (R.slope = { deg, canvas: c });
 }
 
 // swipe: satellite left of the divider, height map right. The divider stays put in screen space while you pan/zoom.
@@ -430,8 +477,15 @@ cv.addEventListener('pointermove', e => {
   if (p.x < 0 || p.y < 0 || p.x >= R.W || p.y >= R.H) { tip.hidden = true; $('readout').textContent = '–'; return; }
   const gx = Math.min(R.gw - 1, Math.floor(p.x * R.gw / R.W)), gy = Math.min(R.gh - 1, Math.floor(p.y * R.gh / R.H));
   const h = R.grid[gy * R.gw + gx];
-  $('readout').textContent = fmtH(h);
-  tip.innerHTML = `<b>${fmtH(h)}</b>`; tip.hidden = false;
+  if (S.mode === 'slope') {
+    const d = slopeLayer(R).deg[gy * R.gw + gx];
+    $('readout').textContent = fmtDeg(d);
+    tip.innerHTML = `<b>${fmtDeg(d)}</b> slope <span class="muted">· ${fmtH(h)}</span>`;
+  } else {
+    $('readout').textContent = fmtH(h);
+    tip.innerHTML = `<b>${fmtH(h)}</b>`;
+  }
+  tip.hidden = false;
   tip.style.left = (p.cx + 14) + 'px'; tip.style.top = (p.cy + 14) + 'px';
 });
 cv.addEventListener('pointerleave', () => { tip.hidden = true; $('readout').textContent = '–'; });
@@ -460,11 +514,11 @@ function saveShot(src) {
   if (LEGEND_MODES.has(S.mode)) {                               // legend (bottom-right)
     const lw = 160 * k, bw = lw + 110 * k, bh = 30 * k, bx = c.width - pad - bw, by = c.height - pad - bh;
     x.fillStyle = 'rgba(238,234,224,0.92)'; x.fillRect(bx, by, bw, bh);
-    const g = x.createLinearGradient(bx + 42 * k, 0, bx + 42 * k + lw, 0);
-    for (let i = 0; i <= 10; i++) g.addColorStop(i / 10, turboCss(i / 10));
+    const L = legendSpec(), g = x.createLinearGradient(bx + 42 * k, 0, bx + 42 * k + lw, 0);
+    for (let i = 0; i <= 10; i++) g.addColorStop(i / 10, L.col(i / 10));
     x.fillStyle = g; x.fillRect(bx + 42 * k, by + 10 * k, lw, 10 * k);
     x.fillStyle = '#1d2833'; x.font = `500 ${13 * k}px Barlow, "Segoe UI", sans-serif`;
-    x.fillText('0 m', bx + 10 * k, by + bh / 2); x.fillText(`${S.R.hmax}+ m`, bx + 50 * k + lw, by + bh / 2);
+    x.fillText(L.lo, bx + 10 * k, by + bh / 2); x.fillText(L.hi, bx + 50 * k + lw, by + bh / 2);
   }
   c.toBlob(b => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(b);

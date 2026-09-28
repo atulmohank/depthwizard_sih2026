@@ -67,6 +67,7 @@
       <button data-mode="heat">Colour by height</button>
       <button data-mode="surface">Raw surface</button>
       <button data-mode="contours">Contours</button>
+      <button data-mode="slope">Slope</button>
       <button data-mode="swipe" class="wide">Swipe: Satellite | Height map</button>
     </div>
 
@@ -82,7 +83,7 @@
           <option value="5">5 m</option><option value="10">10 m</option></select></label>
     </div>
 
-    <div class="readout"><span>Height under cursor</span><b id="readout">–</b></div>
+    <div class="readout"><span id="readLbl">Height under cursor</span><b id="readout">–</b></div>
     <div id="stats" class="stats"></div>
 
     <div class="row">
@@ -125,7 +126,7 @@
   </div>
   <iframe id="v3d" hidden title="3D viewer"></iframe>
   <div id="tip2d" class="tip" hidden></div>
-  <div id="legend" hidden><span>0 m</span><i class="ramp"></i><span id="legMax"></span></div>
+  <div id="legend" hidden><span id="legMin">0 m</span><i class="ramp"></i><span id="legMax"></span></div>
   <div id="busy" hidden>Loading result…</div>
 </main>
 

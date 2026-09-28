@@ -16,3 +16,22 @@ out/
 images/
 runs/**/*.jpg
 .claude/
+
+# python bytecode
+*.pyc
+
+# secrets (none found, guard anyway)
+.env
+.env.*
+*.pem
+*.key
+
+# large binaries: model weights, raw tiles, archives
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.zip
+*.7z
+*.tif
+*.tiff
